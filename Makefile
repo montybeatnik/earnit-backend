@@ -12,4 +12,4 @@ dbup:
 	docker-compose up 
 
 dbshell:
-	docker exec -it kids_app_postgres psql -U postgres -d kids_app
+	docker exec -it earnit_postgres psql -U postgres -d earnit

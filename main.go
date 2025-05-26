@@ -10,22 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
-
-var db *gorm.DB
-
-func initDB() {
-	dsn := "host=localhost user=postgres password=postgres dbname=kids_app port=5432 sslmode=disable"
-	database, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		panic("failed to connect database")
-	}
-
-	database.AutoMigrate(&models.User{}, &models.Task{}, &models.Reward{}, &models.Redemption{})
-	db = database
-}
 
 func generateJWT(user models.User) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -60,18 +45,28 @@ func authMiddleware(c *gin.Context) {
 }
 
 func main() {
-	initDB()
+	models.InitDB()
+	models.SeedTemplates()
 	r := gin.Default()
 
 	r.POST("/register", RegisterHandler)
 	r.POST("/login", LoginHandler)
 
+	r.GET("/me", AuthMiddleware, Me)
+
+	r.GET("/children", AuthMiddleware, ListChildren)
+
+	r.GET("/task-templates", ListTaskTemplates)
+
 	r.GET("/tasks", authMiddleware, ListTasks)
 	r.POST("/tasks", authMiddleware, CreateTask)
+	r.PUT("/tasks/:id/submit", AuthMiddleware, SubmitTask)
 	r.PUT("/tasks/:id/complete", authMiddleware, CompleteTask)
 
-	r.GET("/rewards", authMiddleware, ListRewards)
-	r.POST("/rewards/:id/redeem", authMiddleware, RedeemReward)
+	r.POST("/rewards", AuthMiddleware, CreateReward)
+	r.GET("/rewards", AuthMiddleware, ListRewards)
+	r.POST("/rewards/:id/redeem", AuthMiddleware, RedeemReward)
+	r.GET("/redemptions", AuthMiddleware, ListRedemptions)
 
 	r.Run() // default on :8080
 }
