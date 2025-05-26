@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -15,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 var jwtKey = []byte("my_secret_key")
@@ -152,33 +150,40 @@ type TaskInput struct {
 
 func CreateTask(c *gin.Context) {
 	var input TaskInput
-	body, _ := io.ReadAll(c.Request.Body)
-	fmt.Println("Incoming JSON:", string(body))
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
+	userID := c.GetUint("user_id")
 	task := models.Task{
 		Title:        input.Title,
 		Description:  input.Description,
 		Points:       input.Points,
-		CreatedByID:  userID.(uint),
-		AssignedToID: input.AssignedToID,
 		Status:       "pending",
+		CreatedByID:  userID,
+		AssignedToID: input.AssignedToID,
 	}
+
 	if err := models.DB.Create(&task).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create task"})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"message": "task created", "task": task})
+
+	// ✅ Create template if not already existing
+	var existing models.TaskTemplate
+	err := models.DB.Where("title = ? AND created_by_id = ?", input.Title, userID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		template := models.TaskTemplate{
+			Title:       input.Title,
+			Description: input.Description,
+			Points:      input.Points,
+			CreatedByID: userID,
+		}
+		models.DB.Create(&template)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"task": task})
 }
 
 func SubmitTask(c *gin.Context) {
@@ -203,46 +208,68 @@ func SubmitTask(c *gin.Context) {
 }
 
 func CompleteTask(c *gin.Context) {
-	userID := c.GetUint("user_id")
 	role := c.GetString("role")
-	taskID := c.Param("id")
+	userID := c.GetUint("user_id")
 
 	var task models.Task
-	if err := models.DB.First(&task, taskID).Error; err != nil {
+	if err := models.DB.First(&task, c.Param("id")).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
 		return
 	}
 
-	if role != "parent" || task.CreatedByID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to approve this task"})
+	// Allow child to submit task
+	if role == "child" && task.AssignedToID == userID {
+		task.Status = "awaiting_approval"
+		models.DB.Save(&task)
+		c.JSON(http.StatusOK, gin.H{"message": "task submitted for approval"})
 		return
 	}
 
-	if task.Status != "awaiting_approval" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task not awaiting approval"})
+	// Allow parent to approve task
+	if role == "parent" {
+		task.Status = "approved"
+
+		// Add points to child
+		var child models.User
+		if err := models.DB.First(&child, task.AssignedToID).Error; err == nil {
+			child.Points += task.Points
+			models.DB.Save(&child)
+		}
+
+		models.DB.Save(&task)
+		c.JSON(http.StatusOK, gin.H{"message": "task approved"})
 		return
 	}
 
-	task.Status = "approved"
-	// Award points to child
-	var child models.User
-	if err := models.DB.First(&child, task.AssignedToID).Error; err == nil {
-		child.Points += task.Points
-		models.DB.Save(&child)
-	}
-	models.DB.Save(&task)
-	c.JSON(http.StatusOK, gin.H{"message": "task approved"})
+	c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 }
 
 func ListTasks(c *gin.Context) {
+
+	status := c.Query("status") // optional
 	userID := c.GetUint("user_id")
 	role := c.GetString("role")
 
 	var tasks []models.Task
 	if role == "parent" {
-		models.DB.Where("created_by_id = ?", userID).Find(&tasks)
+		query := models.DB.Where("created_by_id = ?", userID)
+
+		if status != "" {
+			if status == "pending" {
+				// Include both pending and awaiting_approval
+				query = query.Where("status IN ?", []string{"pending", "awaiting_approval"})
+			} else {
+				query = query.Where("status = ?", status)
+			}
+		}
+
+		query.Find(&tasks)
 	} else {
-		models.DB.Where("assigned_to_id = ?", userID).Find(&tasks)
+		query := models.DB.Where("assigned_to_id = ?", userID)
+		if status != "" {
+			query = query.Where("status = ?", status)
+		}
+		query.Find(&tasks)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})

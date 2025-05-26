@@ -28,6 +28,8 @@ func dbAutoMigrate() {
 }
 
 type User struct {
+	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
+
 	ID        uint   `gorm:"primaryKey" json:"id"`
 	Name      string `json:"name"`
 	Email     string `gorm:"unique"`
@@ -39,20 +41,26 @@ type User struct {
 }
 
 type Task struct {
-	ID           uint   `json:"id"`
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	Points       int    `json:"points"`
-	Status       string `json:"status"`
-	CreatedByID  uint   `json:"created_by_id"`
-	AssignedToID uint   `json:"assigned_to_id"`
+	gorm.Model             // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
+	ID           uint      `json:"id"`
+	Title        string    `json:"title"`
+	Description  string    `json:"description"`
+	Points       int       `json:"points"`
+	Status       string    `json:"status"`
+	CreatedByID  uint      `json:"created_by_id"`
+	AssignedToID uint      `json:"assigned_to_id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type TaskTemplate struct {
+	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
+
 	ID          uint   `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Points      int    `json:"points"`
+	CreatedByID uint   `json:"created_by_id"`
 }
 
 func SeedTemplates() {
@@ -71,6 +79,8 @@ func SeedTemplates() {
 }
 
 type Reward struct {
+	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
+
 	ID          uint   `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -79,6 +89,8 @@ type Reward struct {
 }
 
 type Redemption struct {
+	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
+
 	ID       uint   `json:"id"`
 	RewardID uint   `json:"reward_id"`
 	ChildID  uint   `json:"child_id"`
