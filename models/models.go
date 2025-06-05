@@ -21,7 +21,9 @@ func InitDB() {
 }
 
 func dbAutoMigrate() {
-	err := DB.AutoMigrate(&User{}, &Task{}, &Reward{}, &Redemption{}, &TaskTemplate{})
+	err := DB.AutoMigrate(
+		&User{}, &Task{}, &Reward{}, &Redemption{}, &TaskTemplate{},
+		&RewardTemplate{}, &TaskTemplate{})
 	if err != nil {
 		log.Fatal("Database migration failed: ", err)
 	}
@@ -43,12 +45,12 @@ type User struct {
 type Task struct {
 	gorm.Model             // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
 	ID           uint      `json:"id"`
-	Title        string    `json:"title"`
 	Description  string    `json:"description"`
 	Points       int       `json:"points"`
 	Status       string    `json:"status"`
 	CreatedByID  uint      `json:"created_by_id"`
-	AssignedToID uint      `json:"assigned_to_id"`
+	Title        string    `json:"title" gorm:"uniqueIndex:idx_title_assigned"`
+	AssignedToID uint      `json:"assigned_to_id" gorm:"uniqueIndex:idx_title_assigned"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -57,7 +59,7 @@ type TaskTemplate struct {
 	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
 
 	ID          uint   `json:"id"`
-	Title       string `json:"title"`
+	Title       string `json:"title" gorm:"uniqueIndex:idx_title_assigned"`
 	Description string `json:"description"`
 	Points      int    `json:"points"`
 	CreatedByID uint   `json:"created_by_id"`
@@ -82,10 +84,11 @@ type Reward struct {
 	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
 
 	ID          uint   `json:"id"`
-	Title       string `json:"title"`
+	Title       string `json:"title" gorm:"uniqueIndex:idx_title_assigned"`
 	Description string `json:"description"`
 	Cost        int    `json:"cost"`
 	CreatedByID uint   `json:"created_by_id"` // parent who created it
+	Type        string `json:"type"`          // NEW: e.g. "screen_time", "money", "item"
 }
 
 type Redemption struct {
@@ -95,4 +98,15 @@ type Redemption struct {
 	RewardID uint   `json:"reward_id"`
 	ChildID  uint   `json:"child_id"`
 	Status   string `json:"status"` // requested, approved, delivered
+}
+
+type RewardTemplate struct {
+	ID          uint           `json:"id"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Cost        int            `json:"cost"`
+	CreatedByID uint           `json:"created_by_id"`
 }

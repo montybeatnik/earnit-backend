@@ -13,3 +13,9 @@ dbup:
 
 dbshell:
 	docker exec -it earnit_postgres psql -U postgres -d earnit
+
+seeddb:
+	go run cmd/seed/main.go
+
+resetdb:
+	go run cmd/tools/reset_db.go 

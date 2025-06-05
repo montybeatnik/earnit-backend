@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
+	"time"
 
 	"earnit/models"
 
@@ -14,226 +16,122 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func setupTaskTestRouter() *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-	r.POST("/register", RegisterHandler)
-	r.POST("/login", LoginHandler)
-	r.POST("/tasks", AuthMiddleware, CreateTask)
-	r.PUT("/tasks/:id/submit", AuthMiddleware, SubmitTask)
-	r.PUT("/tasks/:id/complete", AuthMiddleware, CompleteTask)
-	r.GET("/tasks", AuthMiddleware, ListTasks)
-	return r
+func testRegisterLoginWithIDs(router *gin.Engine, name, role string, parentID *uint) (token, email string, id uint) {
+	email = fmt.Sprintf("%s_%d@example.com", role, time.Now().UnixNano())
+	body := map[string]interface{}{
+		"name":     name,
+		"email":    email,
+		"password": "password123",
+		"role":     role,
+	}
+	if parentID != nil {
+		body["parent_id"] = *parentID
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/register", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		log.Fatalf("Failed to register %s: %s", role, w.Body.String())
+	}
+
+	var resp struct {
+		Token string `json:"token"`
+		ID    uint   `json:"id"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	return resp.Token, email, resp.ID
 }
 
-func TestCreateAndCompleteTask(t *testing.T) {
-	models.InitDB()
-	r := setupTaskTestRouter()
-
-	// Register parent and child
-	parentEmail := "taskparent@example.com"
-	childEmail := "taskchild@example.com"
-	models.DB.Where("email IN (?, ?)", parentEmail, childEmail).Delete(&models.User{})
-
-	// Register parent
-	regParent := RegisterInput{
-		Name:     "Parent",
-		Email:    parentEmail,
-		Password: "parentpass",
-		Role:     "parent",
-	}
-	parentBody, _ := json.Marshal(regParent)
-	req, _ := http.NewRequest("POST", "/register", bytes.NewBuffer(parentBody))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	assert.Equal(t, http.StatusOK, resp.Code)
-	var regParentRes map[string]string
-	json.Unmarshal(resp.Body.Bytes(), &regParentRes)
-	parentToken := regParentRes["token"]
-
-	// Get parent ID
-	var parent models.User
-	models.DB.Where("email = ?", parentEmail).First(&parent)
-
-	// Register child
-	regChild := RegisterInput{
-		Name:     "Child",
-		Email:    childEmail,
-		Password: "childpass",
-		Role:     "child",
-		ParentID: &parent.ID,
-	}
-	childBody, _ := json.Marshal(regChild)
-	req, _ = http.NewRequest("POST", "/register", bytes.NewBuffer(childBody))
-	req.Header.Set("Content-Type", "application/json")
-	resp = httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	assert.Equal(t, http.StatusOK, resp.Code)
-
+func assignChildToParent(childID uint, parentID uint) {
 	var child models.User
-	models.DB.Where("email = ?", childEmail).First(&child)
-
-	// Create task
-	taskPayload := TaskInput{
-		Title:        "Do Homework",
-		Description:  "Math and Science",
-		Points:       10,
-		AssignedToID: child.ID,
+	if err := models.DB.First(&child, childID).Error; err != nil {
+		log.Fatal("Child not found")
 	}
-	taskBody, _ := json.Marshal(taskPayload)
-	req, _ = http.NewRequest("POST", "/tasks", bytes.NewBuffer(taskBody))
-	req.Header.Set("Authorization", "Bearer "+parentToken)
-	req.Header.Set("Content-Type", "application/json")
-	resp = httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	assert.Equal(t, http.StatusCreated, resp.Code)
-	var taskRes map[string]interface{}
-	json.Unmarshal(resp.Body.Bytes(), &taskRes)
-	taskData := taskRes["task"].(map[string]interface{})
-	taskID := int(taskData["id"].(float64))
-
-	// Submit task for approval (child)
-	var childToken string
-	loginChild := LoginInput{
-		Email:    childEmail,
-		Password: "childpass",
-	}
-	loginBody, _ := json.Marshal(loginChild)
-	req, _ = http.NewRequest("POST", "/login", bytes.NewBuffer(loginBody))
-	req.Header.Set("Content-Type", "application/json")
-	resp = httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	assert.Equal(t, http.StatusOK, resp.Code)
-	var loginRes map[string]string
-	json.Unmarshal(resp.Body.Bytes(), &loginRes)
-	childToken = loginRes["token"]
-
-	req, _ = http.NewRequest("PUT", "/tasks/"+strconv.Itoa(taskID)+"/submit", nil)
-	req.Header.Set("Authorization", "Bearer "+childToken)
-	resp = httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	assert.Equal(t, http.StatusOK, resp.Code)
-
-	// Approve task (parent)
-	req, _ = http.NewRequest("PUT", "/tasks/"+strconv.Itoa(taskID)+"/complete", nil)
-	req.Header.Set("Authorization", "Bearer "+parentToken)
-	resp = httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	assert.Equal(t, http.StatusOK, resp.Code)
-	var completeRes map[string]interface{}
-	json.Unmarshal(resp.Body.Bytes(), &completeRes)
-	assert.Equal(t, "task approved", completeRes["message"])
+	child.ParentID = &parentID
+	models.DB.Save(&child)
 }
 
-func setupRewardTestRouter() *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-	r.POST("/register", RegisterHandler)
-	r.POST("/login", LoginHandler)
-	r.POST("/rewards", AuthMiddleware, CreateReward)
-	r.GET("/rewards", AuthMiddleware, ListRewards)
-	r.POST("/rewards/:id/redeem", AuthMiddleware, RedeemReward)
-	r.GET("/redemptions", AuthMiddleware, ListRedemptions)
-	return r
+func createTaskForChild(router *gin.Engine, token string, childID uint) uint {
+	task := map[string]interface{}{
+		"title":          "Do Homework",
+		"description":    "Complete your homework",
+		"points":         10,
+		"assigned_to_id": childID,
+	}
+	jsonBody, _ := json.Marshal(task)
+
+	fmt.Printf("DEBUG: Creating task for child ID: %d\n", childID)
+	req := httptest.NewRequest("POST", "/tasks", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		log.Fatalf("Failed to create task: %s", w.Body.String())
+	}
+
+	var resp struct {
+		Task models.Task `json:"task"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	return resp.Task.ID
 }
 
 func TestRewardFlow(t *testing.T) {
-	models.InitDB()
-	r := setupRewardTestRouter()
+	r := setupTestRouter()
 
-	// Clear users
-	models.DB.Where("email IN (?, ?)", "parent@example.com", "child@example.com").Delete(&models.User{})
+	t.Run("Create and redeem reward", func(t *testing.T) {
+		parentToken, _, parentID := testRegisterLoginWithIDs(r, "Parent", "parent", nil)
+		childToken, _, childID := testRegisterLoginWithIDs(r, "Child", "child", &parentID)
 
-	tests := []struct {
-		name string
-		run  func(t *testing.T, parentToken, childToken string)
-	}{
-		{
-			name: "Create and redeem reward",
-			run: func(t *testing.T, parentToken, childToken string) {
-				// Create reward
-				reward := models.Reward{
-					Title:       "Ice Cream",
-					Description: "One scoop from local shop",
-					Cost:        5,
-				}
-				body, _ := json.Marshal(reward)
-				req, _ := http.NewRequest("POST", "/rewards", bytes.NewBuffer(body))
-				req.Header.Set("Authorization", "Bearer "+parentToken)
-				req.Header.Set("Content-Type", "application/json")
-				resp := httptest.NewRecorder()
-				r.ServeHTTP(resp, req)
-				assert.Equal(t, http.StatusCreated, resp.Code)
+		assignChildToParent(childID, parentID)
+		taskID := createTaskForChild(r, parentToken, childID)
 
-				// Get reward ID
-				var res map[string]models.Reward
-				json.Unmarshal(resp.Body.Bytes(), &res)
-				rewardID := res["reward"].ID
+		// Child submits the task
+		req := httptest.NewRequest("PUT", fmt.Sprintf("/tasks/%d/submit", taskID), nil)
+		req.Header.Set("Authorization", "Bearer "+childToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
 
-				// Give child points
-				var child models.User
-				models.DB.Where("email = ?", "child@example.com").First(&child)
-				child.Points = 10
-				models.DB.Save(&child)
+		// Parent approves the task
+		req = httptest.NewRequest("PUT", fmt.Sprintf("/tasks/%d/complete", taskID), nil)
+		req.Header.Set("Authorization", "Bearer "+parentToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
 
-				// Redeem reward
-				req, _ = http.NewRequest("POST", "/rewards/"+strconv.Itoa(int(rewardID))+"/redeem", nil)
-				req.Header.Set("Authorization", "Bearer "+childToken)
-				resp = httptest.NewRecorder()
-				r.ServeHTTP(resp, req)
-				assert.Equal(t, http.StatusOK, resp.Code)
-			},
-		},
-	}
+		// Parent creates reward
+		reward := map[string]interface{}{
+			"title":  "Extra TV Time",
+			"cost":   5,
+			"status": "available",
+		}
+		rewardBody, _ := json.Marshal(reward)
+		req = httptest.NewRequest("POST", "/rewards", bytes.NewBuffer(rewardBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+parentToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusCreated, w.Code)
 
-	// Register parent and child
-	parentToken, childToken := testRegisterAndLogin(t, r)
+		var resp struct {
+			Reward models.Reward `json:"reward"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.run(t, parentToken, childToken)
-		})
-	}
-}
-
-func testRegisterAndLogin(t *testing.T, r *gin.Engine) (string, string) {
-	// Register parent
-	regParent := RegisterInput{
-		Name:     "Parent",
-		Email:    "parent@example.com",
-		Password: "pass",
-		Role:     "parent",
-	}
-	parentBody, _ := json.Marshal(regParent)
-	req, _ := http.NewRequest("POST", "/register", bytes.NewBuffer(parentBody))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	var regParentRes map[string]string
-	json.Unmarshal(resp.Body.Bytes(), &regParentRes)
-	parentToken := regParentRes["token"]
-
-	// Get parent ID
-	var parent models.User
-	models.DB.Where("email = ?", regParent.Email).First(&parent)
-
-	// Register child
-	regChild := RegisterInput{
-		Name:     "Child",
-		Email:    "child@example.com",
-		Password: "pass",
-		Role:     "child",
-		ParentID: &parent.ID,
-	}
-	childBody, _ := json.Marshal(regChild)
-	req, _ = http.NewRequest("POST", "/register", bytes.NewBuffer(childBody))
-	req.Header.Set("Content-Type", "application/json")
-	resp = httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	var regChildRes map[string]string
-	json.Unmarshal(resp.Body.Bytes(), &regChildRes)
-	childToken := regChildRes["token"]
-
-	return parentToken, childToken
+		// Child redeems reward
+		req = httptest.NewRequest("POST", fmt.Sprintf("/rewards/%d/redeem", resp.Reward.ID), nil)
+		req.Header.Set("Authorization", "Bearer "+childToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
 }

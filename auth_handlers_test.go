@@ -3,29 +3,22 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"earnit/models"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
-
-func setupTestRouter() *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-	r.POST("/register", RegisterHandler)
-	r.POST("/login", LoginHandler)
-	return r
-}
 
 func TestRegisterAndLogin(t *testing.T) {
 	models.InitDB()
 	r := setupTestRouter()
 
-	testEmail := "testuser@example.com"
+	testEmail := fmt.Sprintf("testuser_%d@example.com", time.Now().UnixNano())
 	models.DB.Where("email = ?", testEmail).Delete(&models.User{})
 
 	regPayload := RegisterInput{
@@ -63,7 +56,7 @@ func TestDuplicateEmail(t *testing.T) {
 	models.InitDB()
 	r := setupTestRouter()
 
-	testEmail := "duplicate@example.com"
+	testEmail := fmt.Sprintf("testuser_%d@example.com", time.Now().UnixNano())
 	models.DB.Where("email = ?", testEmail).Delete(&models.User{})
 
 	payload := RegisterInput{

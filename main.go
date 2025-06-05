@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/joho/godotenv"
 )
 
 func generateJWT(user models.User) (string, error) {
@@ -28,6 +30,7 @@ func authMiddleware(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing auth header"})
 		return
 	}
+
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -39,13 +42,31 @@ func authMiddleware(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		return
 	}
-	claims := token.Claims.(jwt.MapClaims)
-	c.Set("user_id", uint(claims["user_id"].(float64)))
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
+		return
+	}
+
+	// 🔥 Extract user_id directly from claims
+	userIDFloat, ok := claims["user_id"].(float64)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid user_id in token"})
+		return
+	}
+
+	// 👇 Now we’re sure user_id is set correctly
+	c.Set("user_id", uint(userIDFloat))
 	c.Set("role", claims["role"].(string))
 	c.Next()
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 	models.InitDB()
 	models.SeedTemplates()
 	r := gin.Default()
@@ -60,21 +81,31 @@ func main() {
 	r.POST("/register", RegisterHandler)
 	r.POST("/login", LoginHandler)
 
-	r.GET("/me", AuthMiddleware, Me)
-
-	r.GET("/children", AuthMiddleware, ListChildren)
-
 	r.GET("/task-templates", ListTaskTemplates)
 
 	r.GET("/tasks", authMiddleware, ListTasks)
 	r.POST("/tasks", authMiddleware, CreateTask)
-	r.PUT("/tasks/:id/submit", AuthMiddleware, SubmitTask)
 	r.PUT("/tasks/:id/complete", authMiddleware, CompleteTask)
 
-	r.POST("/rewards", AuthMiddleware, CreateReward)
-	r.GET("/rewards", AuthMiddleware, ListRewards)
-	r.POST("/rewards/:id/redeem", AuthMiddleware, RedeemReward)
-	r.GET("/redemptions", AuthMiddleware, ListRedemptions)
+	// Public boilerplate task/reward fetch
+	r.GET("/boilerplate/tasks", GetBoilerplateTasks)
+	r.GET("/boilerplate/rewards", GetBoilerplateRewards)
 
-	r.Run() // default on :8080
+	r.POST("/boilerplate/assign-tasks", AssignBoilerplateTasks)
+	r.POST("/boilerplate/assign-rewards", AssignBoilerplateRewards)
+
+	auth := r.Group("/")
+	auth.Use(AuthMiddleware())
+	{
+		auth.GET("/me", Me)
+		auth.GET("/children", ListChildren)
+		auth.PUT("/tasks/:id/submit", SubmitTask)
+		auth.POST("/rewards", CreateReward)
+		auth.GET("/rewards", ListRewards)
+		auth.POST("/rewards/:id/redeem", RedeemReward)
+		auth.GET("/redemptions", ListRedemptions)
+		auth.POST("/children", AddChildrenBulk)
+	}
+
+	r.Run("0.0.0.0:8080") // default on :8080
 }

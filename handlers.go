@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"time"
 
 	"earnit/models"
+	"earnit/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -15,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var jwtKey = []byte("my_secret_key")
+var jwtKey = []byte(os.Getenv("JWT_SECRET"))
 
 func GenerateJWT(user models.User) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -26,27 +32,78 @@ func GenerateJWT(user models.User) (string, error) {
 	return token.SignedString(jwtKey)
 }
 
-func AuthMiddleware(c *gin.Context) {
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing auth header"})
-		return
-	}
-	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("unexpected signing method")
+func AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+			return
 		}
-		return jwtKey, nil
-	})
-	if err != nil || !token.Valid {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-		return
+
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, errors.New("unexpected signing method")
+			}
+			return jwtKey, nil
+		})
+		if err != nil || !token.Valid {
+			log.Printf("invalid token: %v", err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
+			return
+		}
+
+		// 🔥 Extract user_id from the token claims
+		userIDFloat, ok := claims["user_id"].(float64)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid user_id in token"})
+			return
+		}
+		role, _ := claims["role"].(string)
+
+		c.Set("user_id", uint(userIDFloat))
+		c.Set("role", role)
+		c.Next()
 	}
-	claims := token.Claims.(jwt.MapClaims)
-	c.Set("user_id", uint(claims["user_id"].(float64)))
-	c.Set("role", claims["role"].(string))
-	c.Next()
+}
+
+type RegisterResponse struct {
+	Token string `json:"token"`
+	ID    uint   `json:"id"`
+}
+
+func RegisterUser(router *gin.Engine, name, role string) (string, string, uint) {
+	email := fmt.Sprintf("%s_%d@example.com", role, time.Now().UnixNano())
+	password := "password123"
+
+	body := map[string]string{
+		"name":     name,
+		"email":    email,
+		"password": password,
+		"role":     role,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/register", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		panic(fmt.Sprintf("Failed to register %s: %s", role, w.Body.String()))
+	}
+
+	var resp RegisterResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	return resp.Token, email, resp.ID
 }
 
 type RegisterInput struct {
@@ -84,16 +141,131 @@ func RegisterHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
 		return
 	}
+	log.Printf("generating token for %v\n", user.Name)
 	token, err := GenerateJWT(user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	c.JSON(http.StatusOK, gin.H{
+		"token": token,
+		"id":    user.ID,
+	})
+}
+
+func SetupStarterContent(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	role := c.GetString("role")
+
+	if role == "parent" {
+		starterTasks := []models.Task{
+			{Title: "Take out trash", Points: 5, CreatedByID: userID},
+			{Title: "Do homework", Points: 10, CreatedByID: userID},
+		}
+
+		starterRewards := []models.Reward{
+			{Title: "30 min of screen time", Cost: 15, CreatedByID: userID},
+			{Title: "$5 allowance", Cost: 50, CreatedByID: userID},
+		}
+
+		for _, task := range starterTasks {
+			models.DB.Create(&task)
+		}
+		for _, reward := range starterRewards {
+			models.DB.Create(&reward)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Starter content created!"})
+}
+
+// GET /boilerplate/tasks
+func ListBoilerplateTasks(c *gin.Context) {
+	var tasks []models.TaskTemplate
+	models.DB.Find(&tasks)
+	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+func GetBoilerplateTasks(c *gin.Context) {
+	var tasks []models.TaskTemplate
+	models.DB.Find(&tasks)
+	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+func GetBoilerplateRewards(c *gin.Context) {
+	var rewards []models.RewardTemplate
+	models.DB.Find(&rewards)
+	c.JSON(http.StatusOK, gin.H{"rewards": rewards})
+}
+
+type AssignBoilerplateInput struct {
+	TaskIDs   []uint `json:"task_ids"`
+	RewardIDs []uint `json:"reward_ids"`
+}
+
+func AssignBoilerplate(c *gin.Context) {
+	var input AssignBoilerplateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+
+	for _, tid := range input.TaskIDs {
+		var t models.TaskTemplate
+		if err := models.DB.First(&t, tid).Error; err == nil {
+			models.DB.Create(&models.Task{
+				Title:       t.Title,
+				Description: t.Description,
+				Points:      t.Points,
+				Status:      "pending",
+				CreatedByID: userID,
+			})
+		}
+	}
+
+	for _, rid := range input.RewardIDs {
+		var r models.RewardTemplate
+		if err := models.DB.First(&r, rid).Error; err == nil {
+			models.DB.Create(&models.Reward{
+				Title:       r.Title,
+				Description: r.Description,
+				Cost:        r.Cost,
+				CreatedByID: userID,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Boilerplate assigned"})
+}
+
+// POST /boilerplate/assign-tasks
+func AssignSelectedTasks(c *gin.Context) {
+	var input struct {
+		TaskIDs []uint `json:"task_ids"`
+	}
+	if err := c.BindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	for _, tid := range input.TaskIDs {
+		var tmpl models.TaskTemplate
+		if err := models.DB.First(&tmpl, tid).Error; err == nil {
+			models.DB.Create(&models.Task{
+				Title:       tmpl.Title,
+				Description: tmpl.Description,
+				Points:      tmpl.Points,
+				Status:      "pending",
+				CreatedByID: userID,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Tasks assigned"})
 }
 
 func LoginHandler(c *gin.Context) {
-	log.Println("hit login handler")
 	var input LoginInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -276,6 +448,23 @@ func ListTasks(c *gin.Context) {
 }
 
 func CreateReward(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	log.Printf("CreateReward called by user ID: %d", userID)
+
+	// If needed, check user from DB to verify role
+	var user models.User
+	if err := models.DB.First(&user, userID).Error; err != nil {
+		log.Printf("User not found: %v", err)
+		c.JSON(http.StatusForbidden, gin.H{"error": "user not found"})
+		return
+	}
+	log.Printf("CreateReward: user role is %s", user.Role)
+
+	if user.Role != "parent" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only parents can create rewards"})
+		return
+	}
+
 	role := c.GetString("role")
 	if role != "parent" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only parents can create rewards"})
@@ -379,4 +568,104 @@ func ListRedemptions(c *gin.Context) {
 	models.DB.Where("child_id IN ?", childIDs).Find(&redemptions)
 
 	c.JSON(http.StatusOK, gin.H{"redemptions": redemptions})
+}
+
+func AssignBoilerplateTasks(c *gin.Context) {
+	var input struct {
+		TaskIDs []uint `json:"task_ids"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+
+	for _, id := range input.TaskIDs {
+		var template models.TaskTemplate
+		if err := models.DB.First(&template, id).Error; err == nil {
+			task := models.Task{
+				Title:       template.Title,
+				Description: template.Description,
+				Points:      template.Points,
+				Status:      "pending",
+				CreatedByID: userID,
+			}
+			models.DB.Create(&task)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Boilerplate tasks assigned"})
+}
+
+func AssignBoilerplateRewards(c *gin.Context) {
+	var input struct {
+		RewardIDs []uint `json:"reward_ids"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+
+	for _, id := range input.RewardIDs {
+		var template models.RewardTemplate
+		if err := models.DB.First(&template, id).Error; err == nil {
+			reward := models.Reward{
+				Title:       template.Title,
+				Description: template.Description,
+				Cost:        template.Cost,
+				CreatedByID: userID,
+			}
+			models.DB.Create(&reward)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Boilerplate rewards assigned"})
+}
+
+func AddChildrenBulk(c *gin.Context) {
+	var input struct {
+		Children []models.User `json:"children"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	tokenString := c.GetHeader("Authorization")
+	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+
+	claims, err := utils.ParseToken(tokenString) // or whatever your JWT parser is
+	if err != nil {
+		log.Println("failed to get token: ", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+		return
+	}
+
+	parentID := claims.UserID
+	log.Printf("Received children: %+v", input.Children)
+	log.Printf("Assigning to parent ID: %d", parentID)
+
+	for _, child := range input.Children {
+		child.Role = "child"
+		childParentID := parentID
+		child.ParentID = &childParentID
+		if child.Email == "" {
+			child.Email = fmt.Sprintf("child_%d_%d@noemail.local", parentID, time.Now().UnixNano())
+		}
+		log.Printf("Received children: %+v", child)
+		log.Printf("Assigning to parent ID: %d", parentID)
+
+		if err := models.DB.Create(&child).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create one or more children"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "Children created"})
 }
