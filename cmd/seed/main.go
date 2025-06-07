@@ -2,12 +2,13 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"earnit/models"
 )
 
 func main() {
-	models.InitDB()
+	models.InitDB(os.Getenv("DATABASE_DSN_DEV")) // TODO: change this for prod
 
 	tasks := []models.Task{
 		{Title: "Make Your Bed", Description: "Neatly arrange your bed after waking up", Points: 5},

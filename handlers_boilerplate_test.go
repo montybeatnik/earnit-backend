@@ -25,6 +25,7 @@ func setupTestRouter() *gin.Engine {
 	r.POST("/rewards/:id/redeem", AuthMiddleware(), RedeemReward)
 	r.GET("/boilerplate/tasks", GetBoilerplateTasks)
 	r.GET("/boilerplate/rewards", GetBoilerplateRewards)
+	r.POST("/children/:id/setup-password")
 	return r
 }
 

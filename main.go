@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
-	models.InitDB()
+	models.InitDB(os.Getenv("DATABASE_DSN_DEV")) // TODO: change this to env variable based on env
 	models.SeedTemplates()
 	r := gin.Default()
 
@@ -80,6 +81,8 @@ func main() {
 
 	r.POST("/register", RegisterHandler)
 	r.POST("/login", LoginHandler)
+	r.POST("/child/login", ChildLogin)
+	r.POST("/check-username", CheckUsernameAvailability)
 
 	r.GET("/task-templates", ListTaskTemplates)
 
@@ -93,6 +96,7 @@ func main() {
 
 	r.POST("/boilerplate/assign-tasks", AssignBoilerplateTasks)
 	r.POST("/boilerplate/assign-rewards", AssignBoilerplateRewards)
+	r.POST("/children/:id/setup-password", SetupChildPasswordHandler)
 
 	auth := r.Group("/")
 	auth.Use(AuthMiddleware())
@@ -105,6 +109,8 @@ func main() {
 		auth.POST("/rewards/:id/redeem", RedeemReward)
 		auth.GET("/redemptions", ListRedemptions)
 		auth.POST("/children", AddChildrenBulk)
+		auth.GET("/parent/code", GetParentCode)
+		auth.POST("/link-parent", LinkChildToParent)
 	}
 
 	r.Run("0.0.0.0:8080") // default on :8080

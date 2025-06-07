@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"earnit/models"
 	"earnit/utils"
+
+	"math/rand"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -55,9 +58,12 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
+			log.Println("Invalid JWT claims format")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
 			return
 		}
+
+		log.Printf("JWT Claims: %+v", claims)
 
 		// 🔥 Extract user_id from the token claims
 		userIDFloat, ok := claims["user_id"].(float64)
@@ -67,6 +73,14 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 		role, _ := claims["role"].(string)
 
+		userID := uint(userIDFloat)
+		var user models.User
+		if err := models.DB.First(&user, userID).Error; err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			return
+		}
+
+		c.Set("user", user)
 		c.Set("user_id", uint(userIDFloat))
 		c.Set("role", role)
 		c.Next()
@@ -136,6 +150,10 @@ func RegisterHandler(c *gin.Context) {
 		Password: string(hashedPassword),
 		Role:     input.Role,
 		ParentID: input.ParentID,
+	}
+	if user.Role == "parent" {
+		code := models.GenerateParentCode()
+		user.Code = &code
 	}
 	if err := models.DB.Create(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
@@ -285,6 +303,38 @@ func LoginHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{"token": token})
+}
+
+func ChildLogin(c *gin.Context) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid login request"})
+		return
+	}
+
+	var user models.User
+	if err := models.DB.Where("username = ? AND role = ?", req.Username, "child").First(&user).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	log.Printf("generating token for %v\n", user.Name)
+	token, err := GenerateJWT(user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"token": token})
 }
 
@@ -655,17 +705,187 @@ func AddChildrenBulk(c *gin.Context) {
 		child.Role = "child"
 		childParentID := parentID
 		child.ParentID = &childParentID
+
 		if child.Email == "" {
 			child.Email = fmt.Sprintf("child_%d_%d@noemail.local", parentID, time.Now().UnixNano())
 		}
+
+		if child.Username == nil || *child.Username == "" {
+			generated := fmt.Sprintf("child%d_%d", parentID, rand.Intn(10000))
+			child.Username = &generated
+		}
+
+		// Generate a unique code
+		child.Code = models.GenerateUniqueUserCode(models.DB)
+
 		log.Printf("Received children: %+v", child)
 		log.Printf("Assigning to parent ID: %d", parentID)
 
 		if err := models.DB.Create(&child).Error; err != nil {
+			log.Printf("ERROR: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create one or more children"})
 			return
 		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Children created"})
+}
+
+type SetupPasswordInput struct {
+	Password string `json:"password"`
+}
+
+func SetupChildPassword(c *gin.Context) {
+	id := c.Param("id")
+	var input SetupPasswordInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	var user models.User
+	if err := models.DB.First(&user, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Child not found"})
+		return
+	}
+
+	if user.Role != "child" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Not a child account"})
+		return
+	}
+
+	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	user.Password = string(hashedPassword)
+	// optionally set user.SetupComplete = true
+	models.DB.Save(&user)
+
+	token, _ := generateJWT(user)
+	c.JSON(http.StatusOK, gin.H{"token": token})
+}
+
+type LinkInput struct {
+	ParentCode string `json:"parent_code"`
+}
+
+func LinkParent(c *gin.Context) {
+	var input LinkInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	var parent models.User
+	if err := models.DB.Where("code = ?", input.ParentCode).First(&parent).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent not found"})
+		return
+	}
+
+	// Create or update a child user session, or issue next step instructions.
+	c.JSON(http.StatusOK, gin.H{"parent_id": parent.ID})
+}
+
+func SetupChildPasswordHandler(c *gin.Context) {
+	idParam := c.Param("id")
+	childID, err := strconv.Atoi(idParam)
+	if err != nil {
+		log.Printf("Invalid child ID: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid child ID"})
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("Failed to bind JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	log.Printf("Setting password for child ID %d", childID)
+
+	if err := models.SetupChildPassword(models.DB, uint(childID), req.Username, req.Password); err != nil {
+		log.Printf("Failed to set password: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Password set successfully"})
+}
+
+func GetParentCode(c *gin.Context) {
+	role, _ := c.Get("role")
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	if roleStr, ok := role.(string); !ok || roleStr != "parent" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can view codes"})
+		return
+	}
+
+	var user models.User
+	if err := models.DB.First(&user, userIDVal).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": user.Code})
+}
+
+func LinkChildToParent(c *gin.Context) {
+	var req struct {
+		ParentCode string `json:"parent_code"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var parent models.User
+	if err := models.DB.Where("code = ?", req.ParentCode).First(&parent).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent not found"})
+		return
+	}
+
+	childIface, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	child, ok := childIface.(models.User)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User type assertion failed"})
+		return
+	}
+
+	child.ParentID = &parent.ID
+	models.DB.Save(&child)
+
+	c.JSON(http.StatusOK, gin.H{"child_id": child.ID})
+}
+
+func CheckUsernameAvailability(c *gin.Context) {
+	var input struct {
+		Username string `json:"username"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil || input.Username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var count int64
+	models.DB.Model(&models.User{}).Where("username = ?", input.Username).Count(&count)
+	if count > 0 {
+		c.JSON(http.StatusConflict, gin.H{"available": false})
+	} else {
+		c.JSON(http.StatusOK, gin.H{"available": true})
+	}
 }

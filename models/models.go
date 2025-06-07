@@ -1,17 +1,19 @@
 package models
 
 import (
+	"fmt"
 	"log"
+	"math/rand"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var DB *gorm.DB
 
-func InitDB() {
-	dsn := "host=localhost user=postgres password=postgres dbname=earnit port=5432 sslmode=disable"
+func InitDB(dsn string) {
 	database, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatal("Failed to connect to database: ", err)
@@ -29,17 +31,55 @@ func dbAutoMigrate() {
 	}
 }
 
+func GenerateParentCode() string {
+	b := make([]byte, 4)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "000000" // fallback
+	}
+	return fmt.Sprintf("%x", b)[:6] // e.g., "a3f9d1"
+}
+
+func SetupChildPassword(db *gorm.DB, userID uint, username string, password string) error {
+	var user User
+	if err := db.First(&user, userID).Error; err != nil {
+		log.Printf("User lookup failed: %v", err)
+		return err
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("Password hashing failed: %v", err)
+		return err
+	}
+
+	user.Username = &username
+	user.Password = string(hashed)
+	user.SetupComplete = true
+
+	if err := db.Save(&user).Error; err != nil {
+		log.Printf("User save failed: %v", err)
+		return err
+	}
+
+	log.Printf("Password updated for user ID %d", userID)
+	return nil
+}
+
 type User struct {
 	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
 
-	ID        uint   `gorm:"primaryKey" json:"id"`
-	Name      string `json:"name"`
-	Email     string `gorm:"unique"`
-	Password  string
-	Role      string // "parent" or "child"
-	ParentID  *uint  // nullable if Role is "parent"
-	CreatedAt time.Time
-	Points    int `gorm:"default:0" json:"points"`
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	Name          string `json:"name"`
+	Email         string `gorm:"unique"`
+	Password      string
+	Role          string // "parent" or "child"
+	ParentID      *uint  // nullable if Role is "parent"
+	CreatedAt     time.Time
+	Points        int     `gorm:"default:0" json:"points"`
+	SetupComplete bool    `gorm:"default:false" json:"setup_complete"`
+	Code          *string `json:"code" gorm:"uniqueIndex"`
+	Username      *string `gorm:"uniqueIndex;size:100" json:"username,omitempty"`
 }
 
 type Task struct {
@@ -109,4 +149,15 @@ type RewardTemplate struct {
 	Description string         `json:"description"`
 	Cost        int            `json:"cost"`
 	CreatedByID uint           `json:"created_by_id"`
+}
+
+func GenerateUniqueUserCode(db *gorm.DB) *string {
+	for {
+		code := fmt.Sprintf("%06d", rand.Intn(1000000))
+		var count int64
+		db.Model(&User{}).Where("code = ?", code).Count(&count)
+		if count == 0 {
+			return &code
+		}
+	}
 }

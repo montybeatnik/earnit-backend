@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 )
 
 func TestRegisterAndLogin(t *testing.T) {
-	models.InitDB()
+	models.InitDB(os.Getenv("DATABASE_DSN_TEST"))
 	r := setupTestRouter()
 
 	testEmail := fmt.Sprintf("testuser_%d@example.com", time.Now().UnixNano())
@@ -53,7 +54,7 @@ func TestRegisterAndLogin(t *testing.T) {
 }
 
 func TestDuplicateEmail(t *testing.T) {
-	models.InitDB()
+	models.InitDB(os.Getenv("DATABASE_DSN_TEST"))
 	r := setupTestRouter()
 
 	testEmail := fmt.Sprintf("testuser_%d@example.com", time.Now().UnixNano())
@@ -81,7 +82,7 @@ func TestDuplicateEmail(t *testing.T) {
 }
 
 func TestInvalidLogin(t *testing.T) {
-	models.InitDB()
+	models.InitDB(os.Getenv("DATABASE_DSN_TEST"))
 	r := setupTestRouter()
 
 	payload := LoginInput{

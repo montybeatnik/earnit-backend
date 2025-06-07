@@ -18,7 +18,8 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 
-	dsn := os.Getenv("DATABASE_DSN")
+	// dsn := os.Getenv("DATABASE_DSN")
+	dsn := os.Getenv("DATABASE_DSN_DEV")
 	if dsn == "" {
 		log.Fatal("DATABASE_DSN is not set")
 	}
