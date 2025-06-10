@@ -440,7 +440,7 @@ func CompleteTask(c *gin.Context) {
 	}
 
 	// Allow child to submit task
-	if role == "child" && task.AssignedToID == userID {
+	if role == "child" && task.AssignedTo.ID == userID {
 		task.Status = "awaiting_approval"
 		models.DB.Save(&task)
 		c.JSON(http.StatusOK, gin.H{"message": "task submitted for approval"})
@@ -466,6 +466,16 @@ func CompleteTask(c *gin.Context) {
 	c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 }
 
+type TaskResponse struct {
+	ID             uint      `json:"id"`
+	Title          string    `json:"title"`
+	Description    string    `json:"description"`
+	Points         int       `json:"points"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	AssignedToName string    `json:"assigned_to_name"`
+}
+
 func ListTasks(c *gin.Context) {
 	status := c.Query("status")
 	userID := c.GetUint("user_id")
@@ -488,8 +498,8 @@ func ListTasks(c *gin.Context) {
 			childIDs[i] = child.ID
 		}
 
-		// Step 3: Fetch tasks assigned to those child IDs
-		query := models.DB.Where("assigned_to_id IN ?", childIDs)
+		// Step 3: Fetch tasks with preload
+		query := models.DB.Preload("AssignedTo").Where("assigned_to_id IN ?", childIDs)
 		if status != "" {
 			if status == "pending" {
 				query = query.Where("status IN ?", []string{"pending", "awaiting_approval"})
@@ -498,18 +508,39 @@ func ListTasks(c *gin.Context) {
 			}
 		}
 
-		query.Find(&tasks)
+		if err := query.Find(&tasks).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
+			return
+		}
+
 	} else {
-		// Child logic remains the same
-		query := models.DB.Where("assigned_to_id = ?", userID)
+		// Child flow
+		query := models.DB.Preload("AssignedTo").Where("assigned_to_id = ?", userID)
 		if status != "" {
 			query = query.Where("status = ?", status)
 		}
-		query.Find(&tasks)
+		if err := query.Find(&tasks).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
+			return
+		}
 	}
 
-	log.Printf("Here are the tasks for %v; tasks: %v", userID, tasks)
-	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+	// Step 4: Build TaskResponse
+	var response []TaskResponse
+	for _, t := range tasks {
+		response = append(response, TaskResponse{
+			ID:             t.ID,
+			Title:          t.Title,
+			Description:    t.Description,
+			Points:         t.Points,
+			Status:         t.Status,
+			CreatedAt:      t.CreatedAt,
+			AssignedToName: t.AssignedTo.Name, // <- this assumes User model has Name
+		})
+	}
+
+	log.Printf("Here are the tasks for %v; tasks: %v", userID, response)
+	c.JSON(http.StatusOK, gin.H{"tasks": response})
 }
 
 func CreateReward(c *gin.Context) {

@@ -89,7 +89,8 @@ type Task struct {
 	Status       string    `json:"status"`
 	CreatedByID  uint      `json:"created_by_id"`
 	Title        string    `json:"title" `
-	AssignedToID uint      `json:"assigned_to_id" `
+	AssignedToID uint      `json:"assigned_to_id" binding:"required"`
+	AssignedTo   User      `gorm:"foreignKey:AssignedToID" json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

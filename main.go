@@ -86,7 +86,6 @@ func main() {
 
 	r.GET("/task-templates", ListTaskTemplates)
 
-	r.GET("/tasks", authMiddleware, ListTasks)
 	r.POST("/tasks", authMiddleware, CreateTask)
 	r.PUT("/tasks/:id/complete", authMiddleware, CompleteTask)
 
@@ -106,6 +105,7 @@ func main() {
 		auth.GET("/me", Me)
 		auth.GET("/children", ListChildren)
 		auth.PUT("/tasks/:id/submit", SubmitTask)
+		auth.GET("/tasks", ListTasks)
 		auth.POST("/rewards", CreateReward)
 		auth.GET("/rewards", ListRewards)
 		auth.POST("/rewards/:id/redeem", RedeemReward)
