@@ -51,7 +51,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return jwtKey, nil
 		})
 		if err != nil || !token.Valid {
-			log.Printf("invalid token: %v", err)
+			log.Printf("invalid token: %v\nTOKEN: %v, %v", err, tokenString, token)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
@@ -467,18 +467,31 @@ func CompleteTask(c *gin.Context) {
 }
 
 func ListTasks(c *gin.Context) {
-
-	status := c.Query("status") // optional
+	status := c.Query("status")
 	userID := c.GetUint("user_id")
 	role := c.GetString("role")
 
 	var tasks []models.Task
-	if role == "parent" {
-		query := models.DB.Where("created_by_id = ?", userID)
+	log.Println("DEBUG: HERE IS THE USER ID WHEN GETTING TASKS: ", userID)
 
+	if role == "parent" {
+		// Step 1: Find all children of the parent
+		var children []models.User
+		if err := models.DB.Where("parent_id = ?", userID).Find(&children).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve children"})
+			return
+		}
+
+		// Step 2: Extract child IDs
+		childIDs := make([]uint, len(children))
+		for i, child := range children {
+			childIDs[i] = child.ID
+		}
+
+		// Step 3: Fetch tasks assigned to those child IDs
+		query := models.DB.Where("assigned_to_id IN ?", childIDs)
 		if status != "" {
 			if status == "pending" {
-				// Include both pending and awaiting_approval
 				query = query.Where("status IN ?", []string{"pending", "awaiting_approval"})
 			} else {
 				query = query.Where("status = ?", status)
@@ -487,6 +500,7 @@ func ListTasks(c *gin.Context) {
 
 		query.Find(&tasks)
 	} else {
+		// Child logic remains the same
 		query := models.DB.Where("assigned_to_id = ?", userID)
 		if status != "" {
 			query = query.Where("status = ?", status)
@@ -494,6 +508,7 @@ func ListTasks(c *gin.Context) {
 		query.Find(&tasks)
 	}
 
+	log.Printf("Here are the tasks for %v; tasks: %v", userID, tasks)
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 }
 
@@ -551,6 +566,7 @@ func ListRewards(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
+		log.Println("looking for rewards created by: ", *child.ParentID)
 		models.DB.Where("created_by_id = ?", child.ParentID).Find(&rewards)
 	}
 
@@ -580,6 +596,7 @@ func RedeemReward(c *gin.Context) {
 	}
 
 	if child.Points < reward.Cost {
+		log.Println("child points: ", child.Points, "reward cost: ", reward.Cost)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "not enough points"})
 		return
 	}
@@ -660,6 +677,8 @@ func AssignBoilerplateRewards(c *gin.Context) {
 	}
 
 	userID := c.GetUint("user_id")
+
+	log.Printf("adding boilerplate rewards for user: %v; rewards: %v\n", userID, input.RewardIDs)
 
 	for _, id := range input.RewardIDs {
 		var template models.RewardTemplate
@@ -768,22 +787,40 @@ type LinkInput struct {
 }
 
 func LinkParent(c *gin.Context) {
-	var input LinkInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+	var req struct {
+		ParentCode string `json:"parent_code"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
 	var parent models.User
-	if err := models.DB.Where("code = ?", input.ParentCode).First(&parent).Error; err != nil {
+	if err := models.DB.Where("code = ?", req.ParentCode).First(&parent).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Parent not found"})
 		return
 	}
 
-	// Create or update a child user session, or issue next step instructions.
-	c.JSON(http.StatusOK, gin.H{"parent_id": parent.ID})
-}
+	var children []models.User
+	if err := models.DB.Where("parent_id = ?", parent.ID).Find(&children).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch children"})
+		return
+	}
 
+	// Return only necessary fields
+	safeChildren := make([]map[string]interface{}, len(children))
+	for i, child := range children {
+		safeChildren[i] = map[string]interface{}{
+			"id":   child.ID,
+			"name": child.Name,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"children": safeChildren,
+	})
+}
 func SetupChildPasswordHandler(c *gin.Context) {
 	idParam := c.Param("id")
 	childID, err := strconv.Atoi(idParam)
@@ -888,4 +925,69 @@ func CheckUsernameAvailability(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusOK, gin.H{"available": true})
 	}
+}
+
+func GetChildrenByParentCode(c *gin.Context) {
+	parentCode := c.Param("code")
+
+	// Step 1: Look up the parent user by the code
+	var parent models.User
+	if err := models.DB.Where("code = ?", parentCode).First(&parent).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent not found"})
+		return
+	}
+
+	// Step 2: Get all children linked to this parent
+	var children []models.User
+	if err := models.DB.
+		Where("parent_id = ? AND role = ?", parent.ID, "child").
+		Find(&children).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not retrieve children"})
+		return
+	}
+
+	// Step 3: Return only necessary fields
+	var result []gin.H
+	for _, child := range children {
+		result = append(result, gin.H{
+			"id":   child.ID,
+			"name": child.Name,
+		})
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+type TaskAssignInput struct {
+	TemplateID   uint `json:"template_id" binding:"required"`
+	AssignedToID uint `json:"assigned_to_id" binding:"required"`
+}
+
+func AssignTaskFromTemplate(c *gin.Context) {
+	var input TaskAssignInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var template models.TaskTemplate
+	if err := models.DB.First(&template, input.TemplateID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+		return
+	}
+
+	newTask := models.Task{
+		Title:        template.Title,
+		Description:  template.Description,
+		Points:       template.Points,
+		AssignedToID: input.AssignedToID,
+		Status:       "pending",
+	}
+
+	if err := models.DB.Create(&newTask).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign task"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"task": newTask})
 }

@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+var dsn = "postgres://postgres:postgres@localhost:5432/earnit_test?sslmode=disable"
+
 func setupTestRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
@@ -54,6 +56,7 @@ func TestGetBoilerplateTasks(t *testing.T) {
 }
 
 func TestGetBoilerplateRewards(t *testing.T) {
+	models.InitDB(dsn)
 	models.DB.Exec("DELETE FROM reward_templates")
 
 	sample := models.RewardTemplate{

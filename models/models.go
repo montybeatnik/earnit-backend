@@ -69,7 +69,6 @@ func SetupChildPassword(db *gorm.DB, userID uint, username string, password stri
 type User struct {
 	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
 
-	ID            uint   `gorm:"primaryKey" json:"id"`
 	Name          string `json:"name"`
 	Email         string `gorm:"unique"`
 	Password      string
@@ -89,8 +88,8 @@ type Task struct {
 	Points       int       `json:"points"`
 	Status       string    `json:"status"`
 	CreatedByID  uint      `json:"created_by_id"`
-	Title        string    `json:"title" gorm:"uniqueIndex:idx_title_assigned"`
-	AssignedToID uint      `json:"assigned_to_id" gorm:"uniqueIndex:idx_title_assigned"`
+	Title        string    `json:"title" `
+	AssignedToID uint      `json:"assigned_to_id" `
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -124,7 +123,7 @@ type Reward struct {
 	gorm.Model // <- this line automatically adds ID, CreatedAt, UpdatedAt, DeletedAt
 
 	ID          uint   `json:"id"`
-	Title       string `json:"title" gorm:"uniqueIndex:idx_title_assigned"`
+	Title       string `json:"title" `
 	Description string `json:"description"`
 	Cost        int    `json:"cost"`
 	CreatedByID uint   `json:"created_by_id"` // parent who created it

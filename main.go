@@ -69,7 +69,7 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 	models.InitDB(os.Getenv("DATABASE_DSN_DEV")) // TODO: change this to env variable based on env
-	models.SeedTemplates()
+	// models.SeedTemplates()
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
@@ -95,12 +95,14 @@ func main() {
 	r.GET("/boilerplate/rewards", GetBoilerplateRewards)
 
 	r.POST("/boilerplate/assign-tasks", AssignBoilerplateTasks)
-	r.POST("/boilerplate/assign-rewards", AssignBoilerplateRewards)
 	r.POST("/children/:id/setup-password", SetupChildPasswordHandler)
+	r.POST("/link-parent", LinkParent)
+	r.POST("/children/by-parent-code/:parentCode", GetChildrenByParentCode)
 
 	auth := r.Group("/")
 	auth.Use(AuthMiddleware())
 	{
+		auth.POST("/boilerplate/assign-rewards", AssignBoilerplateRewards)
 		auth.GET("/me", Me)
 		auth.GET("/children", ListChildren)
 		auth.PUT("/tasks/:id/submit", SubmitTask)
@@ -110,7 +112,7 @@ func main() {
 		auth.GET("/redemptions", ListRedemptions)
 		auth.POST("/children", AddChildrenBulk)
 		auth.GET("/parent/code", GetParentCode)
-		auth.POST("/link-parent", LinkChildToParent)
+		auth.POST("/tasks/assign", AssignTaskFromTemplate)
 	}
 
 	r.Run("0.0.0.0:8080") // default on :8080
