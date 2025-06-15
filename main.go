@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"earnit/models"
+	"earnit/wsmanager"
 
 	"net/http"
 
@@ -77,6 +78,8 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+var ws = wsmanager.NewWSManager()
+
 // WEB SOCKET CODE
 
 func main() {
@@ -105,7 +108,6 @@ func main() {
 	r.GET("/task-templates", ListTaskTemplates)
 
 	r.POST("/tasks", authMiddleware, CreateTask)
-	r.PUT("/tasks/:id/complete", authMiddleware, CompleteTask)
 
 	// Public boilerplate task/reward fetch
 	r.GET("/boilerplate/tasks", GetBoilerplateTasks)
@@ -122,7 +124,6 @@ func main() {
 		auth.POST("/boilerplate/assign-rewards", AssignBoilerplateRewards)
 		auth.GET("/me", Me)
 		auth.GET("/children", ListChildren)
-		auth.PUT("/tasks/:id/submit", SubmitTask)
 		auth.GET("/tasks", ListTasks)
 		auth.POST("/rewards", CreateReward)
 		auth.GET("/rewards", ListRewards)
@@ -131,6 +132,10 @@ func main() {
 		auth.POST("/children", AddChildrenBulk)
 		auth.GET("/parent/code", GetParentCode)
 		auth.POST("/tasks/assign", AssignTaskFromTemplate)
+
+		// Task routes
+		auth.PUT("/tasks/:id/submit", SubmitTaskHandler)   // for children
+		auth.PUT("/tasks/:id/approve", ApproveTaskHandler) // for parents
 	}
 
 	r.Run("0.0.0.0:8080") // default on :8080

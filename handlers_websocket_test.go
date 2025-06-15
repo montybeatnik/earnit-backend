@@ -3,7 +3,9 @@ package main
 import (
 	"earnit/wsmanager"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -11,7 +13,7 @@ import (
 )
 
 func TestTaskApprovalSendsNotification(t *testing.T) {
-	// Simulate child user connecting
+	ws := wsmanager.NewWSManager()
 	childID := uint(42)
 
 	// Gin + WebSocket test server
@@ -23,17 +25,21 @@ func TestTaskApprovalSendsNotification(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	wsURL := "ws" + ts.URL[len("http"):] + "/ws"
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// Dial as test WebSocket client
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer ws.Close()
+	defer conn.Close()
+
+	// Give server time to register connection
+	time.Sleep(100 * time.Millisecond)
 
 	// Simulate task approval
-	err = wsmanager.Notify(childID, "Task approved!")
+	err = ws.Notify(childID, "Task approved!")
 	require.NoError(t, err)
 
-	// Verify child received it
-	_, msg, err := ws.ReadMessage()
+	// Read from the client side
+	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
 	require.Equal(t, "Task approved!", string(msg))
 }

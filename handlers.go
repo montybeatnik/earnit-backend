@@ -15,7 +15,6 @@ import (
 
 	"earnit/models"
 	"earnit/utils"
-	"earnit/wsmanager"
 
 	"math/rand"
 
@@ -63,8 +62,6 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
 			return
 		}
-
-		log.Printf("JWT Claims: %+v", claims)
 
 		// 🔥 Extract user_id from the token claims
 		userIDFloat, ok := claims["user_id"].(float64)
@@ -510,7 +507,7 @@ func CompleteTask(c *gin.Context) {
 			Message: fmt.Sprintf("Your task '%s' was approved! 🎉", task.Title),
 		}
 		models.DB.Create(&notif)
-		err := wsmanager.Notify(child.ID, "Your task was approved!")
+		err := ws.Notify(child.ID, "Your task was approved!")
 		if err != nil {
 			log.Println("WebSocket notify error:", err)
 		}
@@ -521,6 +518,73 @@ func CompleteTask(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+}
+
+// Breaking CompleteTask into two separate funcs:
+//  1. for a child to submit the task as completed
+//  2. for the parent to approve of the completed task
+func SubmitTaskHandler(c *gin.Context) {
+	role := c.GetString("role")
+	userID := c.GetUint("user_id")
+
+	var task models.Task
+	if err := models.DB.First(&task, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+
+	if role != "child" || task.AssignedToID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+
+	task.Status = "awaiting_approval"
+	models.DB.Save(&task)
+
+	// 🧠 NEW: Notify parent
+	var parent models.User
+	if err := models.DB.First(&parent, task.CreatedByID).Error; err == nil {
+		msg := fmt.Sprintf("📬 %s submitted a task: '%s'", c.GetString("name"), task.Title)
+		ws.Notify(parent.ID, msg)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "task submitted for approval"})
+}
+
+func ApproveTaskHandler(c *gin.Context) {
+	role := c.GetString("role")
+	if role != "parent" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+
+	var task models.Task
+	if err := models.DB.First(&task, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+
+	task.Status = "approved"
+
+	// Add points to child
+	var child models.User
+	if err := models.DB.First(&child, task.AssignedToID).Error; err == nil {
+		child.Points += task.Points
+		models.DB.Save(&child)
+
+		// Notify child
+		msg := fmt.Sprintf("✅ Your task '%s' was approved!", task.Title)
+		ws.Notify(child.ID, msg)
+
+		// Save notification in DB
+		models.DB.Create(&models.Notification{
+			UserID:  child.ID,
+			Message: msg,
+		})
+	}
+
+	models.DB.Save(&task)
+	c.JSON(http.StatusOK, gin.H{"message": "task approved"})
 }
 
 type TaskResponse struct {
@@ -596,7 +660,6 @@ func ListTasks(c *gin.Context) {
 		})
 	}
 
-	log.Printf("Here are the tasks for %v; tasks: %v", userID, response)
 	c.JSON(http.StatusOK, gin.H{"tasks": response})
 }
 
@@ -1076,6 +1139,7 @@ func AssignTaskFromTemplate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign task"})
 		return
 	}
+	ws.Notify(newTask.AssignedToID, "📌 A new task has been assigned to you!")
 
 	c.JSON(http.StatusOK, gin.H{"task": newTask})
 }
@@ -1089,21 +1153,37 @@ func GetNotifications(c *gin.Context) {
 	c.JSON(http.StatusOK, notifs)
 }
 
+func roleLabel(userID uint, role string) string {
+	if role == "" {
+		if userID == 1 {
+			return "[PARENT? userID=1]"
+		} else if userID == 2 {
+			return "[CHILD? userID=2]"
+		}
+		return fmt.Sprintf("[userID=%d]", userID)
+	}
+	return fmt.Sprintf("[%s userID=%d]", role, userID)
+}
+
 func NotificationWebSocketHandler(c *gin.Context) {
-	userID := c.GetUint("user_id") // assumes middleware sets this
+	userID := c.GetUint("user_id")
+	role := c.GetString("role") // this must be set in your middleware
+
+	log.Printf("🔌 WebSocket handler hit for %s", roleLabel(userID, role))
 
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Println("WebSocket upgrade error:", err)
+		log.Println("❌ WebSocket upgrade error:", err)
 		return
 	}
 
-	wsmanager.Register(userID, conn)
+	ws.Register(userID, conn, role)
+	defer ws.Unregister(userID, conn)
 
-	defer conn.Close()
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
-			break // disconnect
+			log.Printf("🔌 WebSocket disconnect for %s", roleLabel(userID, role))
+			break
 		}
 	}
 }
