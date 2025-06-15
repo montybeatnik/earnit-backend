@@ -574,7 +574,13 @@ func ApproveTaskHandler(c *gin.Context) {
 
 		// Notify child
 		msg := fmt.Sprintf("✅ Your task '%s' was approved!", task.Title)
-		ws.Notify(child.ID, msg)
+		// Send WebSocket message if user is online
+		err := ws.Notify(child.ID, fmt.Sprintf("✅ Your task '%s' was approved!", task.Title))
+		if err != nil {
+			if err := models.DB.First(&child, task.AssignedToID).Error; err == nil {
+				go SendPushNotification(child.PushToken, "✅ Task Approved", "Your task '"+task.Title+"' was approved!")
+			}
+		}
 
 		// Save notification in DB
 		models.DB.Create(&models.Notification{
@@ -1186,4 +1192,51 @@ func NotificationWebSocketHandler(c *gin.Context) {
 			break
 		}
 	}
+}
+
+func RegisterPushToken(c *gin.Context) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+	if err := models.DB.Model(&models.User{}).Where("id = ?", userID).Update("push_token", req.Token).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save token"})
+		return
+	}
+
+	log.Printf("✅ Push token registered for userID=%d", userID)
+	c.JSON(http.StatusOK, gin.H{"message": "token registered"})
+}
+
+func SavePushToken(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var payload struct {
+		Token string `json:"token"`
+	}
+
+	if err := c.ShouldBindJSON(&payload); err != nil || payload.Token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid push token payload"})
+		return
+	}
+
+	var user models.User
+	if err := models.DB.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	user.PushToken = payload.Token
+	if err := models.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save token"})
+		return
+	}
+
+	log.Printf("✅ Saved push token for user %d: %s", userID, payload.Token)
+	c.JSON(http.StatusOK, gin.H{"message": "push token saved"})
 }

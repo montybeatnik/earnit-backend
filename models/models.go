@@ -85,6 +85,8 @@ type User struct {
 
 	// For parent-to-children linkage
 	Children []User `gorm:"foreignKey:ParentID"`
+
+	PushToken string
 }
 
 type Task struct {

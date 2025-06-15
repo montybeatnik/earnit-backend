@@ -136,6 +136,10 @@ func main() {
 		// Task routes
 		auth.PUT("/tasks/:id/submit", SubmitTaskHandler)   // for children
 		auth.PUT("/tasks/:id/approve", ApproveTaskHandler) // for parents
+
+		auth.POST("/push/register", RegisterPushToken)
+
+		auth.POST("/push-token", SavePushToken)
 	}
 
 	r.Run("0.0.0.0:8080") // default on :8080
