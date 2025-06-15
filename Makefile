@@ -15,7 +15,7 @@ dbshell:
 	docker exec -it earnit_postgres psql -U postgres -d earnit
 
 seeddb:
-	go run cmd/seed/main.go
+	 DATABASE_DSN_DEV=postgres://postgres:postgres@localhost:5432/earnit_dev?sslmode=disable APP_ENV=dev go run cmd/seed/main.go
 
 resetdb:
 	go run cmd/tools/reset_db.go 

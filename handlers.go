@@ -15,6 +15,7 @@ import (
 
 	"earnit/models"
 	"earnit/utils"
+	"earnit/wsmanager"
 
 	"math/rand"
 
@@ -83,6 +84,49 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Set("user", user)
 		c.Set("user_id", uint(userIDFloat))
 		c.Set("role", role)
+		c.Next()
+	}
+}
+
+type Claims struct {
+	UserID uint   `json:"user_id"`
+	Role   string `json:"role"`
+	jwt.RegisteredClaims
+}
+
+func ParseJWT(tokenStr string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		return jwtKey, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+		return nil, errors.New("invalid token claims")
+	}
+
+	return claims, nil
+}
+
+func WebSocketAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.Query("token") // fallback to query param
+		if token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+			return
+		}
+
+		claims, err := ParseJWT(token)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+
+		// Store in context
+		c.Set("user_id", claims.UserID)
 		c.Next()
 	}
 }
@@ -438,9 +482,11 @@ func CompleteTask(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
 		return
 	}
+	log.Printf("DEBUG: role=%s, userID=%d, task.AssignedToID=%d\n", role, userID, task.AssignedToID)
 
 	// Allow child to submit task
-	if role == "child" && task.AssignedTo.ID == userID {
+	if role == "child" && task.AssignedToID == userID {
+		log.Println("DEBUG: child is assigned to this task, submitting for approval")
 		task.Status = "awaiting_approval"
 		models.DB.Save(&task)
 		c.JSON(http.StatusOK, gin.H{"message": "task submitted for approval"})
@@ -456,6 +502,17 @@ func CompleteTask(c *gin.Context) {
 		if err := models.DB.First(&child, task.AssignedToID).Error; err == nil {
 			child.Points += task.Points
 			models.DB.Save(&child)
+		}
+
+		// Create notification
+		notif := models.Notification{
+			UserID:  child.ID,
+			Message: fmt.Sprintf("Your task '%s' was approved! 🎉", task.Title),
+		}
+		models.DB.Create(&notif)
+		err := wsmanager.Notify(child.ID, "Your task was approved!")
+		if err != nil {
+			log.Println("WebSocket notify error:", err)
 		}
 
 		models.DB.Save(&task)
@@ -1021,4 +1078,32 @@ func AssignTaskFromTemplate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"task": newTask})
+}
+
+func GetNotifications(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var notifs []models.Notification
+	models.DB.Where("user_id = ? AND read = false", userID).Order("created_at desc").Find(&notifs)
+
+	c.JSON(http.StatusOK, notifs)
+}
+
+func NotificationWebSocketHandler(c *gin.Context) {
+	userID := c.GetUint("user_id") // assumes middleware sets this
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Println("WebSocket upgrade error:", err)
+		return
+	}
+
+	wsmanager.Register(userID, conn)
+
+	defer conn.Close()
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			break // disconnect
+		}
+	}
 }

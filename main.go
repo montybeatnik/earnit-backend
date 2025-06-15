@@ -3,16 +3,19 @@ package main
 import (
 	"errors"
 	"log"
-	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"earnit/models"
 
+	"net/http"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 )
 
@@ -63,6 +66,19 @@ func authMiddleware(c *gin.Context) {
 	c.Next()
 }
 
+// WEB SOCKET CODE
+var WebSocketClients = make(map[uint]*websocket.Conn)
+var WebSocketMutex = sync.RWMutex{}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		// In dev, allow any origin
+		return true
+	},
+}
+
+// WEB SOCKET CODE
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -78,6 +94,8 @@ func main() {
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
 	}))
+
+	r.GET("/ws", WebSocketAuthMiddleware(), NotificationWebSocketHandler)
 
 	r.POST("/register", RegisterHandler)
 	r.POST("/login", LoginHandler)

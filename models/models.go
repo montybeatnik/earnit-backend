@@ -25,7 +25,7 @@ func InitDB(dsn string) {
 func dbAutoMigrate() {
 	err := DB.AutoMigrate(
 		&User{}, &Task{}, &Reward{}, &Redemption{}, &TaskTemplate{},
-		&RewardTemplate{}, &TaskTemplate{})
+		&RewardTemplate{}, &TaskTemplate{}, &Notification{})
 	if err != nil {
 		log.Fatal("Database migration failed: ", err)
 	}
@@ -73,12 +73,18 @@ type User struct {
 	Email         string `gorm:"unique"`
 	Password      string
 	Role          string // "parent" or "child"
-	ParentID      *uint  // nullable if Role is "parent"
 	CreatedAt     time.Time
 	Points        int     `gorm:"default:0" json:"points"`
 	SetupComplete bool    `gorm:"default:false" json:"setup_complete"`
 	Code          *string `json:"code" gorm:"uniqueIndex"`
 	Username      *string `gorm:"uniqueIndex;size:100" json:"username,omitempty"`
+
+	// For child-to-parent linkage
+	ParentID *uint
+	Parent   *User
+
+	// For parent-to-children linkage
+	Children []User `gorm:"foreignKey:ParentID"`
 }
 
 type Task struct {
@@ -160,4 +166,12 @@ func GenerateUniqueUserCode(db *gorm.DB) *string {
 			return &code
 		}
 	}
+}
+
+type Notification struct {
+	ID        uint `gorm:"primaryKey"`
+	UserID    uint // who this notification is for
+	Message   string
+	Read      bool `gorm:"default:false"`
+	CreatedAt time.Time
 }
