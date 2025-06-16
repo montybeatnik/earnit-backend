@@ -118,6 +118,8 @@ func main() {
 	r.POST("/link-parent", LinkParent)
 	r.POST("/children/by-parent-code/:parentCode", GetChildrenByParentCode)
 
+	r.Static("/uploads", "uploads")
+
 	auth := r.Group("/")
 	auth.Use(AuthMiddleware())
 	{
@@ -141,6 +143,11 @@ func main() {
 
 		auth.POST("/push-token", SavePushToken)
 	}
+
+	r.NoRoute(func(c *gin.Context) {
+		log.Println("NO ROUTE MATCHED:", c.Request.Method, c.Request.URL.Path)
+		c.JSON(http.StatusNotFound, gin.H{"error": "no route found"})
+	})
 
 	r.Run("0.0.0.0:8080") // default on :8080
 }

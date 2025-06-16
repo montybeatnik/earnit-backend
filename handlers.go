@@ -527,6 +527,7 @@ func SubmitTaskHandler(c *gin.Context) {
 	role := c.GetString("role")
 	userID := c.GetUint("user_id")
 
+	log.Println("submitting task for ", userID)
 	var task models.Task
 	if err := models.DB.First(&task, c.Param("id")).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
@@ -536,6 +537,17 @@ func SubmitTaskHandler(c *gin.Context) {
 	if role != "child" || task.AssignedToID != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
+	}
+
+	photo, err := c.FormFile("photo")
+	if err == nil {
+		// Save photo
+		photoPath := fmt.Sprintf("uploads/tasks/%d_%s", task.ID, photo.Filename)
+		if err := c.SaveUploadedFile(photo, photoPath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to save photo"})
+			return
+		}
+		task.PhotoURL = photoPath
 	}
 
 	task.Status = "awaiting_approval"
@@ -578,7 +590,8 @@ func ApproveTaskHandler(c *gin.Context) {
 		err := ws.Notify(child.ID, fmt.Sprintf("✅ Your task '%s' was approved!", task.Title))
 		if err != nil {
 			if err := models.DB.First(&child, task.AssignedToID).Error; err == nil {
-				go SendPushNotification(child.PushToken, "✅ Task Approved", "Your task '"+task.Title+"' was approved!")
+				log.Println("was going to do push notifications")
+				// go SendPushNotification(child.PushToken, "✅ Task Approved", "Your task '"+task.Title+"' was approved!")
 			}
 		}
 
@@ -593,16 +606,6 @@ func ApproveTaskHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "task approved"})
 }
 
-type TaskResponse struct {
-	ID             uint      `json:"id"`
-	Title          string    `json:"title"`
-	Description    string    `json:"description"`
-	Points         int       `json:"points"`
-	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
-	AssignedToName string    `json:"assigned_to_name"`
-}
-
 func ListTasks(c *gin.Context) {
 	status := c.Query("status")
 	userID := c.GetUint("user_id")
@@ -612,20 +615,17 @@ func ListTasks(c *gin.Context) {
 	log.Println("DEBUG: HERE IS THE USER ID WHEN GETTING TASKS: ", userID)
 
 	if role == "parent" {
-		// Step 1: Find all children of the parent
 		var children []models.User
 		if err := models.DB.Where("parent_id = ?", userID).Find(&children).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve children"})
 			return
 		}
 
-		// Step 2: Extract child IDs
 		childIDs := make([]uint, len(children))
 		for i, child := range children {
 			childIDs[i] = child.ID
 		}
 
-		// Step 3: Fetch tasks with preload
 		query := models.DB.Preload("AssignedTo").Where("assigned_to_id IN ?", childIDs)
 		if status != "" {
 			if status == "pending" {
@@ -639,9 +639,7 @@ func ListTasks(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
 			return
 		}
-
 	} else {
-		// Child flow
 		query := models.DB.Preload("AssignedTo").Where("assigned_to_id = ?", userID)
 		if status != "" {
 			query = query.Where("status = ?", status)
@@ -652,17 +650,23 @@ func ListTasks(c *gin.Context) {
 		}
 	}
 
-	// Step 4: Build TaskResponse
-	var response []TaskResponse
+	// Step 4: Build response
+	var response []models.TaskResponse
 	for _, t := range tasks {
-		response = append(response, TaskResponse{
+		var photoURL string
+		if t.PhotoURL != "" {
+			photoURL = fmt.Sprintf("/%s", t.PhotoURL)
+		}
+
+		response = append(response, models.TaskResponse{
 			ID:             t.ID,
 			Title:          t.Title,
 			Description:    t.Description,
 			Points:         t.Points,
 			Status:         t.Status,
 			CreatedAt:      t.CreatedAt,
-			AssignedToName: t.AssignedTo.Name, // <- this assumes User model has Name
+			AssignedToName: t.AssignedTo.Name,
+			PhotoURL:       photoURL,
 		})
 	}
 

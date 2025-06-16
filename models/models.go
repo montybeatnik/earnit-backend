@@ -101,6 +101,18 @@ type Task struct {
 	AssignedTo   User      `gorm:"foreignKey:AssignedToID" json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	PhotoURL     string    `json:"photo_url,omitempty"`
+}
+
+type TaskResponse struct {
+	ID             uint      `json:"id"`
+	Title          string    `json:"title"`
+	Description    string    `json:"description"`
+	Points         int       `json:"points"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	AssignedToName string    `json:"assigned_to_name"`
+	PhotoURL       string    `json:"photo_url,omitempty"`
 }
 
 type TaskTemplate struct {
